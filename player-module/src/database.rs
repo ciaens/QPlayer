@@ -1,7 +1,13 @@
 use crate::{AppResult, AudioQuality, PlayerError};
-use controls_module::tracklist::Tracklist;
+use controls_module::{
+    models::{FavoriteIds, Favorites},
+    tracklist::Tracklist,
+};
 use num_traits::ToPrimitive;
-use qobuz_client::client::{OAuthResult, Secrets, delegated_user_id};
+use qobuz_client::{
+    client::{OAuthResult, Secrets, delegated_user_id},
+    qobuz_models::user::LastUpdate,
+};
 use serde_json::to_string;
 use sqlx::types::Json;
 use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
@@ -10,6 +16,13 @@ use std::str::FromStr;
 
 pub struct Database {
     pool: Pool<Sqlite>,
+}
+
+/// The library as last fetched, under the `user/lastUpdate` stamp it was fetched with.
+pub struct LibrarySnapshot {
+    pub last_update: LastUpdate,
+    pub favorite_ids: Option<FavoriteIds>,
+    pub favorites: Option<Favorites>,
 }
 
 impl Database {
@@ -85,6 +98,49 @@ impl Database {
             .execute(&self.pool)
             .await?;
 
+        Ok(())
+    }
+
+    pub async fn get_library(&self) -> AppResult<Option<LibrarySnapshot>> {
+        let Some(row) = sqlx::query!("select last_update, favorite_ids, favorites from library")
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Ok(last_update) = serde_json::from_str::<LastUpdate>(&row.last_update) else {
+            return Ok(None);
+        };
+        Ok(Some(LibrarySnapshot {
+            last_update,
+            favorite_ids: row
+                .favorite_ids
+                .and_then(|json| serde_json::from_str(&json).ok()),
+            favorites: row
+                .favorites
+                .and_then(|json| serde_json::from_str(&json).ok()),
+        }))
+    }
+
+    pub async fn set_library(&self, snapshot: &LibrarySnapshot) -> AppResult<()> {
+        let last_update = to_string(&snapshot.last_update)?;
+        let favorite_ids = snapshot.favorite_ids.as_ref().map(to_string).transpose()?;
+        let favorites = snapshot.favorites.as_ref().map(to_string).transpose()?;
+        sqlx::query!(
+            "insert or replace into library (rowid, last_update, favorite_ids, favorites) values (1, ?1, ?2, ?3)",
+            last_update,
+            favorite_ids,
+            favorites
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_library(&self) -> AppResult<()> {
+        sqlx::query!("delete from library")
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
