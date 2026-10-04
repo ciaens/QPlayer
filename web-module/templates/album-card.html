@@ -1,0 +1,16 @@
+<a
+  href="/album/{{ album.id }}"
+  class="size-42 h-full shrink-0 snap-start transition-transform hover:scale-105 active:scale-95"
+  preload="mousedown"
+  preload-images="true"
+  hx-boost="true"
+>
+  <img
+    class="aspect-square rounded-lg object-cover shadow-md transition-shadow hover:shadow-lg"
+    alt="{{ album.title }}"
+    src="{{ album.image }}"
+    loading="lazy"
+  />
+  <p class="mt-2 truncate text-sm font-medium">{{ album.title }}</p>
+  <p class="truncate text-sm text-gray-500">{{ album.artist.name }}</p>
+</a>

@@ -1,5 +1,7 @@
 use controls_module::controls::Controls;
-use controls_module::models::{AlbumSimple, FavoriteIds, PlaylistSimple};
+use controls_module::models::{
+    AlbumSimple, DiscoverPage, DiscoverSection, FavoriteIds, PlaylistSimple,
+};
 use futures::future::try_join_all;
 use player_module::AppResult;
 use player_module::client::{GenrePlaylistSlug, StreamClient};
@@ -7,7 +9,7 @@ use player_module::error::PlayerError;
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEventKind},
     prelude::*,
-    widgets::ListState,
+    widgets::{ListState, Paragraph},
 };
 
 use crate::image_cache::ImageManager;
@@ -18,56 +20,117 @@ use crate::{
     ui::block,
 };
 
+/// An album section of a discover page, extended a page at a time as the selection reaches its end.
+pub struct AlbumSection {
+    pub title: &'static str,
+    section: DiscoverSection,
+    pub grid: Grid<AlbumSimple>,
+    has_more: bool,
+}
+
+impl AlbumSection {
+    /// The album sections of a discover page, in the order the page shows them.
+    pub fn all(discover: DiscoverPage) -> Vec<Self> {
+        [
+            (
+                "New releases",
+                DiscoverSection::NewReleases,
+                discover.new_releases,
+            ),
+            (
+                "Qobuzissime",
+                DiscoverSection::Qobuzissims,
+                discover.qobuzissims,
+            ),
+            (
+                "Essential Discography",
+                DiscoverSection::IdealDiscography,
+                discover.ideal_discography,
+            ),
+            (
+                "Album of the week",
+                DiscoverSection::AlbumOfTheWeek,
+                discover.album_of_the_week,
+            ),
+            (
+                "Press Accolades",
+                DiscoverSection::PressAwards,
+                discover.press_awards,
+            ),
+            (
+                "Most streamed",
+                DiscoverSection::MostStreamed,
+                discover.most_streamed,
+            ),
+        ]
+        .into_iter()
+        .map(|(title, section, albums)| Self {
+            title,
+            section,
+            grid: Grid::new(albums),
+            has_more: true,
+        })
+        .collect()
+    }
+
+    /// Fetches the next page once a move put the selection on the last row.
+    pub async fn load_more(
+        &mut self,
+        key: KeyCode,
+        client: &StreamClient,
+        genre_id: Option<u32>,
+    ) -> AppResult<()> {
+        let moved = matches!(
+            key,
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l')
+        );
+        if !moved || !self.has_more || !self.grid.at_last_row() {
+            return Ok(());
+        }
+        let offset = self.grid.all_items().len();
+        let page = client
+            .discover_section(self.section, genre_id, offset)
+            .await?;
+        self.has_more = page.has_more;
+        self.grid.extend(page.albums);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 pub struct DiscoverState {
-    featured_albums: Vec<(String, Grid<AlbumSimple>)>,
+    featured_albums: Vec<AlbumSection>,
     featured_playlists: Vec<(String, Grid<PlaylistSimple>)>,
     selected_sub_tab: usize,
     focus: Pane,
+    pub loading: bool,
+    pub loaded: bool,
 }
 
 impl DiscoverState {
     pub async fn new(client: &StreamClient) -> AppResult<Self> {
-        let discover = client.discover_page(None).await?;
+        let mut discover = client.discover_page(None).await?;
+        let tags = std::mem::take(&mut discover.playlists_tags);
 
-        let featured_albums = vec![
-            ("New releases".to_string(), Grid::new(discover.new_releases)),
-            ("Qobuzissime".to_string(), Grid::new(discover.qobuzissims)),
-            (
-                "Essential Discography".to_string(),
-                Grid::new(discover.ideal_discography),
-            ),
-            (
-                "Album of the week".to_string(),
-                Grid::new(discover.album_of_the_week),
-            ),
-            (
-                "Press Accolades".to_string(),
-                Grid::new(discover.press_awards),
-            ),
-            (
-                "Most streamed".to_string(),
-                Grid::new(discover.most_streamed),
-            ),
-        ];
+        let featured_playlists = try_join_all(tags.into_iter().map(|tag| async {
+            let playlists = client
+                .genre_playlists(GenrePlaylistSlug {
+                    genre_id: None,
+                    playlist_slug: Some(tag.clone().slug),
+                })
+                .await?;
 
-        let featured_playlists =
-            try_join_all(discover.playlists_tags.into_iter().map(|tag| async {
-                let playlists = client
-                    .genre_playlists(GenrePlaylistSlug {
-                        genre_id: None,
-                        playlist_slug: Some(tag.clone().slug),
-                    })
-                    .await?;
-
-                Ok::<_, PlayerError>((tag.name, Grid::new(playlists)))
-            }))
-            .await?;
+            Ok::<_, PlayerError>((tag.name, Grid::new(playlists)))
+        }))
+        .await?;
 
         Ok(Self {
-            featured_albums,
+            featured_albums: AlbumSection::all(discover),
             featured_playlists,
             selected_sub_tab: 0,
             focus: Pane::default(),
+            loading: false,
+            loaded: true,
         })
     }
 
@@ -83,10 +146,15 @@ impl DiscoverState {
 
         let tab_content_area = area.inner(Margin::new(1, 1));
 
+        if !self.loaded {
+            frame.render_widget(Paragraph::new("Loading..."), tab_content_area);
+            return;
+        }
+
         let labels = self
             .featured_albums
             .iter()
-            .map(|(label, _)| label.as_str())
+            .map(|section| section.title)
             .chain(
                 self.featured_playlists
                     .iter()
@@ -108,8 +176,8 @@ impl DiscoverState {
 
         let content_focused = self.focus == Pane::Content;
 
-        if let Some((_, list)) = self.selected_album_mut() {
-            list.render(
+        if let Some(section) = self.selected_album_mut() {
+            section.grid.render(
                 content_area,
                 frame.buffer_mut(),
                 content_focused,
@@ -181,10 +249,13 @@ impl DiscoverState {
         controls: &Controls,
         notifications: &mut NotificationList,
     ) -> AppResult<Output> {
-        if let Some((_, list)) = self.selected_album_mut() {
-            return list
+        if let Some(section) = self.selected_album_mut() {
+            let output = section
+                .grid
                 .handle_events(key_code, client, controls, notifications)
-                .await;
+                .await?;
+            section.load_more(key_code, client, None).await?;
+            return Ok(output);
         }
 
         if let Some((_, list)) = self.selected_playlist_mut() {
@@ -196,7 +267,7 @@ impl DiscoverState {
         Ok(Output::NotConsumed)
     }
 
-    fn selected_album_mut(&mut self) -> Option<&mut (String, Grid<AlbumSimple>)> {
+    fn selected_album_mut(&mut self) -> Option<&mut AlbumSection> {
         self.featured_albums.get_mut(self.selected_sub_tab)
     }
 

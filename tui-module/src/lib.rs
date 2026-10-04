@@ -73,7 +73,7 @@ pub async fn init(
     let initial_configuration = database.get_configuration().await?;
 
     let (image_tx, image_rx) = mpsc::unbounded_channel::<ImageLoaded>();
-    let (favorites_tx, favorites_rx) = mpsc::unbounded_channel();
+    let (loads_tx, loads_rx) = mpsc::unbounded_channel();
     let image_cache = ImageManager::new(picker, image_tx);
 
     let mut app = App {
@@ -92,13 +92,13 @@ pub async fn init(
         state: AppState::default(),
         favorites: FavoritesState::default(),
         favorite_ids: FavoriteIds::default(),
-        favorites_tx,
-        favorites_rx,
+        loads_tx,
+        loads_rx,
         favorites_failed: false,
         search: SearchState::default(),
         queue: QueueState::new(queue_tracks),
-        discover: discover::DiscoverState::new(&client).await?,
-        genres: genres::GenresState::new(&client).await?,
+        discover: discover::DiscoverState::default(),
+        genres: genres::GenresState::default(),
         preferences: preferences::PreferencesState::new(
             exit_sender.clone(),
             audio_cache_ttl_sender,

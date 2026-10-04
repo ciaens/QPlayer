@@ -6,7 +6,7 @@ use crate::{
         album_suggestion::{AlbumSuggestionResponse, ReleaseQuery},
         artist::ArtistsResponse,
         artist_page::ArtistPage,
-        discover::Discover,
+        discover::{Discover, DiscoverSection, DiscoverSectionPage},
         favorites::{FavoriteIds, Favorites},
         genre::{GenreFeaturedPlaylists, GenreResponse},
         playlist::{Playlist, UserPlaylistsResult},
@@ -176,6 +176,7 @@ enum Endpoint {
     GenreList,
     GenrePlaylists,
     DiscoverIndex,
+    DiscoverSection(DiscoverSection),
     Suggest,
     ReportStreamingStart,
     ReportStreamingEnd,
@@ -212,6 +213,7 @@ impl Display for Endpoint {
             Self::GenreList => "genre/list",
             Self::GenrePlaylists => "discover/playlists",
             Self::DiscoverIndex => "discover/index",
+            Self::DiscoverSection(section) => section.path(),
             Self::Suggest => "dynamic/suggest",
             Self::ReportStreamingStart => "track/reportStreamingStart",
             Self::ReportStreamingEnd => "track/reportStreamingEndJson",
@@ -462,6 +464,26 @@ impl QobuzClient {
         let genre_id = genre_id.map(|x| x.to_string()).unwrap_or_default();
 
         let params = vec![("genre_ids", genre_id.as_str())];
+
+        self.get(&endpoint, Some(&params)).await
+    }
+
+    /// One page of a discover section, continuing the order of `discover/index`.
+    pub async fn discover_section(
+        &self,
+        section: DiscoverSection,
+        genre_id: Option<u32>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<DiscoverSectionPage> {
+        let endpoint = format!("{}{}", self.base_url, Endpoint::DiscoverSection(section));
+        let genre_id = genre_id.map(|x| x.to_string()).unwrap_or_default();
+        let (offset, limit) = (offset.to_string(), limit.to_string());
+        let params = [
+            ("genre_ids", genre_id.as_str()),
+            ("offset", offset.as_str()),
+            ("limit", limit.as_str()),
+        ];
 
         self.get(&endpoint, Some(&params)).await
     }

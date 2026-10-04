@@ -6,8 +6,8 @@ use std::{
 
 use crate::database::{Credentials, Database};
 use controls_module::models::{
-    Album, AlbumSimple, Artist, ArtistPage, DiscoverPage, FavoriteIds, Favorites, Genre, Playlist,
-    PlaylistSimple, SearchResults, Track,
+    Album, AlbumPage, AlbumSimple, Artist, ArtistPage, DiscoverPage, DiscoverSection, FavoriteIds,
+    Favorites, Genre, Playlist, PlaylistSimple, SearchResults, Track,
     mapper::{
         extract_year, hifi_available, parse_album, parse_album_simple, parse_artist,
         parse_artist_page, parse_discover, parse_genre, parse_playlist, parse_playlist_simple,
@@ -39,6 +39,8 @@ pub struct StreamToken {
     pub blob: Option<String>,
     pub format_id: Option<i32>,
 }
+/// Albums asked per page of a discover section.
+const DISCOVER_PAGE: usize = 20;
 
 /// How long a check of `user/lastUpdate` stands before the next read of the library repeats it.
 const LIBRARY_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
@@ -79,6 +81,7 @@ pub struct StreamClient {
     search_cache: Cache<String, SearchResults>,
     discover_cache: Cache<Option<u32>, DiscoverPage>,
     stream_tokens: Cache<u32, StreamToken>,
+    discover_section_cache: Cache<(DiscoverSection, Option<u32>, usize), AlbumPage>,
 }
 
 impl StreamClient {
@@ -192,6 +195,10 @@ impl StreamClient {
             .time_to_live(std::time::Duration::from_hours(24))
             .build();
 
+        let discover_section_cache = moka::future::CacheBuilder::new(1000)
+            .time_to_live(std::time::Duration::from_hours(24))
+            .build();
+
         let credentials = Mutex::new(credentials);
         let max_audio_quality = RwLock::new(max_audio_quality);
         let file_based_streaming = RwLock::new(file_based_streaming);
@@ -213,6 +220,7 @@ impl StreamClient {
             search_cache,
             discover_cache,
             stream_tokens,
+            discover_section_cache,
         }
     }
 
@@ -840,6 +848,36 @@ impl StreamClient {
         self.discover_cache.insert(genre_id, parsed.clone()).await;
 
         Ok(parsed)
+    }
+
+    /// The albums of a discover section from `offset` on; the discover page is the first page, so the offset is how many it showed.
+    pub async fn discover_section(
+        &self,
+        section: DiscoverSection,
+        genre_id: Option<u32>,
+        offset: usize,
+    ) -> AppResult<AlbumPage> {
+        let key = (section, genre_id, offset);
+        if let Some(cache) = self.discover_section_cache.get(&key).await {
+            return Ok(cache);
+        }
+
+        let client = self.get_client().await?;
+        let result = client
+            .discover_section(section, genre_id, offset, DISCOVER_PAGE)
+            .await?;
+        let audio_quality = &*self.max_audio_quality.read().await;
+        let page = AlbumPage {
+            albums: result
+                .items
+                .into_iter()
+                .map(|x| parse_album_simple(x, audio_quality))
+                .collect(),
+            has_more: result.has_more.unwrap_or(false),
+        };
+        self.discover_section_cache.insert(key, page.clone()).await;
+
+        Ok(page)
     }
 }
 

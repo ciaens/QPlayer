@@ -1,6 +1,6 @@
 use controls_module::{
     controls::Controls,
-    models::{AlbumSimple, FavoriteIds, PlaylistSimple},
+    models::{FavoriteIds, PlaylistSimple},
 };
 use futures::future::try_join_all;
 use player_module::{
@@ -16,6 +16,7 @@ use ratatui::{
 
 use crate::{
     app::{NotificationList, Output},
+    discover::AlbumSection,
     ui::block,
 };
 use crate::{
@@ -24,23 +25,27 @@ use crate::{
     widgets::grid::Grid,
 };
 
+#[derive(Default)]
 pub struct GenresState {
     genres: Vec<GenreItem>,
     selected_genre: usize,
     selected_sub_tab: usize,
     mode: GenresMode,
     focus: Pane,
+    pub loading: bool,
+    pub loaded: bool,
 }
 
 struct GenreItem {
     id: u32,
     name: String,
-    albums: Vec<(String, Grid<AlbumSimple>)>,
+    albums: Vec<AlbumSection>,
     playlists: Vec<(String, Grid<PlaylistSimple>)>,
 }
 
-#[derive(PartialEq)]
+#[derive(Default, PartialEq)]
 enum GenresMode {
+    #[default]
     GenreList,
     GenreDetail,
 }
@@ -65,6 +70,8 @@ impl GenresState {
             selected_sub_tab: 0,
             mode: GenresMode::GenreList,
             focus: Pane::default(),
+            loading: false,
+            loaded: true,
         })
     }
 
@@ -73,9 +80,10 @@ impl GenresState {
             return Ok(());
         };
 
-        let discover = client.discover_page(Some(genre_id)).await?;
+        let mut discover = client.discover_page(Some(genre_id)).await?;
+        let tags = std::mem::take(&mut discover.playlists_tags);
 
-        let playlists = try_join_all(discover.playlists_tags.into_iter().map(|tag| {
+        let playlists = try_join_all(tags.into_iter().map(|tag| {
             let slug = tag.slug.clone();
 
             async {
@@ -91,20 +99,7 @@ impl GenresState {
         }))
         .await?;
 
-        let albums = vec![
-            ("New releases".into(), Grid::new(discover.new_releases)),
-            ("Qobuzissime".into(), Grid::new(discover.qobuzissims)),
-            (
-                "Essential Discography".into(),
-                Grid::new(discover.ideal_discography),
-            ),
-            (
-                "Album of the week".into(),
-                Grid::new(discover.album_of_the_week),
-            ),
-            ("Press Accolades".into(), Grid::new(discover.press_awards)),
-            ("Most streamed".into(), Grid::new(discover.most_streamed)),
-        ];
+        let albums = AlbumSection::all(discover);
 
         if let Some(genre) = self.genres.get_mut(self.selected_genre) {
             genre.albums = albums;
@@ -125,6 +120,11 @@ impl GenresState {
         frame.render_widget(block, area);
 
         let content_area = area.inner(Margin::new(1, 1));
+
+        if !self.loaded {
+            frame.render_widget(Paragraph::new("Loading..."), content_area);
+            return;
+        }
 
         match self.mode {
             GenresMode::GenreList => self.render_genre_list(frame, content_area),
@@ -228,7 +228,7 @@ impl GenresState {
             .visible_album_indices()
             .into_iter()
             .filter_map(|index| genre.albums.get(index))
-            .map(|(label, _)| label.as_str())
+            .map(|section| section.title)
             .chain(genre.playlists.iter().map(|(label, _)| label.as_str()))
             .collect::<Vec<_>>();
 
@@ -246,7 +246,7 @@ impl GenresState {
         let content_focused = self.focus == Pane::Content;
 
         match self.selected_mut() {
-            Some(Selected::Album(list)) => list.render(
+            Some(Selected::Album(section)) => section.grid.render(
                 content_area,
                 frame.buffer_mut(),
                 content_focused,
@@ -391,10 +391,15 @@ impl GenresState {
         controls: &Controls,
         notifications: &mut NotificationList,
     ) -> AppResult<Output> {
+        let genre_id = self.genres.get(self.selected_genre).map(|genre| genre.id);
         match self.selected_mut() {
-            Some(Selected::Album(list)) => {
-                list.handle_events(code, client, controls, notifications)
-                    .await
+            Some(Selected::Album(section)) => {
+                let output = section
+                    .grid
+                    .handle_events(code, client, controls, notifications)
+                    .await?;
+                section.load_more(code, client, genre_id).await?;
+                Ok(output)
             }
             Some(Selected::Playlist(list)) => {
                 list.handle_events(code, client, controls, notifications)
@@ -410,7 +415,7 @@ impl GenresState {
             .into_iter()
             .flat_map(|genre| genre.albums.iter())
             .enumerate()
-            .filter(|(_, (_, albums))| !albums.all_items().is_empty())
+            .filter(|(_, section)| !section.grid.all_items().is_empty())
             .map(|(index, _)| index)
             .collect()
     }
@@ -436,10 +441,7 @@ impl GenresState {
         let genre = self.genres.get_mut(self.selected_genre)?;
 
         match subtab {
-            SubTab::Album(index) => genre
-                .albums
-                .get_mut(index)
-                .map(|(_, grid)| Selected::Album(grid)),
+            SubTab::Album(index) => genre.albums.get_mut(index).map(Selected::Album),
 
             SubTab::Playlist(index) => genre
                 .playlists
@@ -490,7 +492,7 @@ impl GenresState {
 }
 
 enum Selected<'a> {
-    Album(&'a mut Grid<AlbumSimple>),
+    Album(&'a mut AlbumSection),
     Playlist(&'a mut Grid<PlaylistSimple>),
 }
 

@@ -36,6 +36,12 @@ where
         self.filter = items;
     }
 
+    /// Appends to the list and to the filter alike.
+    pub fn extend(&mut self, items: Vec<T>) {
+        self.filter.extend(items.iter().cloned());
+        self.all_items.extend(items);
+    }
+
     pub fn remove_at_index(&mut self, index: usize) {
         if index >= self.all_items.len() {
             return;

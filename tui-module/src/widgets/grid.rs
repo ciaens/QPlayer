@@ -294,6 +294,24 @@ where
         self.reset_view();
     }
 
+    /// Appends items, keeping the selection and the scroll where they are.
+    pub fn extend(&mut self, more: Vec<T>) {
+        self.items.extend(more);
+    }
+
+    /// Whether the selection sits on the last row.
+    pub fn at_last_row(&self) -> bool {
+        let len = self.items.filter().len();
+        if self.columns == 0 || len == 0 {
+            return false;
+        }
+        let row = |index: usize| index.checked_div(self.columns).unwrap_or_default();
+        self.items
+            .state
+            .selected()
+            .is_some_and(|selected| row(selected) == row(len.saturating_sub(1)))
+    }
+
     fn at_row_start(&self) -> bool {
         self.items
             .state

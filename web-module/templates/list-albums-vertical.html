@@ -1,20 +1,14 @@
 <div class="flex w-full snap-x snap-mandatory gap-4 overflow-x-auto p-2 pb-4">
   @for (album in albums) {
-    <a
-      href="/album/{{ album.id }}"
-      class="size-42 h-full shrink-0 snap-start transition-transform hover:scale-105 active:scale-95"
-      preload="mousedown"
-      preload-images="true"
-      hx-boost="true"
+    @defer (album-card.html; album=album) {}
+  }
+  @if (more) {
+    <button
+      class="btn btn-secondary shrink-0 self-center"
+      hx-get="{{ more }}"
+      hx-swap="outerHTML"
     >
-      <img
-        class="aspect-square rounded-lg object-cover shadow-md transition-shadow hover:shadow-lg"
-        alt="{{ album.title }}"
-        src="{{ album.image }}"
-        loading="lazy"
-      />
-      <p class="mt-2 truncate text-sm font-medium">{{ album.title }}</p>
-      <p class="truncate text-sm text-gray-500">{{ album.artist.name }}</p>
-    </a>
+      More
+    </button>
   }
 </div>

@@ -57,10 +57,13 @@ impl NotificationList {
     }
 }
 
-/// What a library load delivers: the ids within a second, the lists when they are in.
-pub enum FavoritesUpdate {
-    Ids(FavoriteIds),
-    Lists(Favorites),
+/// What a background load delivers: the favorite ids within a second, the lists when they are in,
+/// and a tab's content the first time it opens.
+pub enum Load {
+    FavoriteIds(AppResult<FavoriteIds>),
+    Favorites(AppResult<Favorites>),
+    Discover(AppResult<DiscoverState>),
+    Genres(AppResult<GenresState>),
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -127,8 +130,8 @@ pub struct App {
     pub now_playing: NowPlayingState,
     pub favorites: FavoritesState,
     pub favorite_ids: FavoriteIds,
-    pub favorites_tx: mpsc::UnboundedSender<AppResult<FavoritesUpdate>>,
-    pub favorites_rx: mpsc::UnboundedReceiver<AppResult<FavoritesUpdate>>,
+    pub loads_tx: mpsc::UnboundedSender<Load>,
+    pub loads_rx: mpsc::UnboundedReceiver<Load>,
     pub favorites_failed: bool,
     pub search: SearchState,
     pub queue: QueueState,
@@ -203,15 +206,8 @@ impl App {
                     self.should_draw = true;
                 }
 
-                Some(update) = self.favorites_rx.recv() => {
-                    match update {
-                        Ok(FavoritesUpdate::Ids(ids)) => self.favorite_ids = ids,
-                        Ok(FavoritesUpdate::Lists(favorites)) => self.favorites.load(favorites),
-                        Err(err) => {
-                            self.favorites_failed = true;
-                            self.notifications.push(Notification::Error(err.to_string()));
-                        }
-                    }
+                Some(load) = self.loads_rx.recv() => {
+                    self.loaded(load);
                     self.should_draw = true;
                 }
 
@@ -254,20 +250,54 @@ impl App {
         Ok(())
     }
 
-    /// Loads the library off the event loop; the ids and the lists arrive through `favorites_rx`.
+    fn loaded(&mut self, load: Load) {
+        let failed = match load {
+            Load::FavoriteIds(Ok(ids)) => {
+                self.favorite_ids = ids;
+                return;
+            }
+            Load::Favorites(Ok(favorites)) => {
+                self.favorites.load(favorites);
+                return;
+            }
+            Load::Discover(Ok(discover)) => {
+                self.discover = discover;
+                return;
+            }
+            Load::Genres(Ok(genres)) => {
+                self.genres = genres;
+                return;
+            }
+            Load::FavoriteIds(Err(err)) | Load::Favorites(Err(err)) => {
+                self.favorites_failed = true;
+                err
+            }
+            Load::Discover(Err(err)) => {
+                self.discover.loading = false;
+                err
+            }
+            Load::Genres(Err(err)) => {
+                self.genres.loading = false;
+                err
+            }
+        };
+        self.notifications
+            .push(Notification::Error(failed.to_string()));
+    }
+
+    /// Loads the library off the event loop; the ids and the lists arrive through `loads_rx`.
     pub(crate) fn update_favorites(&mut self) {
         self.favorites_failed = false;
         let client = self.client.clone();
-        let sender = self.favorites_tx.clone();
+        let sender = self.loads_tx.clone();
         tokio::spawn(async move {
-            let ids = client.favorite_ids().await.map(FavoritesUpdate::Ids);
+            let ids = client.favorite_ids().await;
             let failed = ids.is_err();
-            let _ = sender.send(ids);
+            let _ = sender.send(Load::FavoriteIds(ids));
             if failed {
                 return;
             }
-            let lists = client.favorites().await.map(FavoritesUpdate::Lists);
-            let _ = sender.send(lists);
+            let _ = sender.send(Load::Favorites(client.favorites().await));
         });
     }
 
@@ -680,11 +710,28 @@ impl App {
         self.current_screen = Tab::Queue;
     }
 
-    const fn navigate_to_discover(&mut self) {
+    /// The discover and genres tabs load the first time they open, off the event loop.
+    fn navigate_to_discover(&mut self) {
+        if !self.discover.loaded && !self.discover.loading {
+            self.discover.loading = true;
+            let client = self.client.clone();
+            let sender = self.loads_tx.clone();
+            tokio::spawn(async move {
+                let _ = sender.send(Load::Discover(DiscoverState::new(&client).await));
+            });
+        }
         self.current_screen = Tab::Discover;
     }
 
-    const fn navigate_to_genres(&mut self) {
+    fn navigate_to_genres(&mut self) {
+        if !self.genres.loaded && !self.genres.loading {
+            self.genres.loading = true;
+            let client = self.client.clone();
+            let sender = self.loads_tx.clone();
+            tokio::spawn(async move {
+                let _ = sender.send(Load::Genres(GenresState::new(&client).await));
+            });
+        }
         self.current_screen = Tab::Genres;
     }
 

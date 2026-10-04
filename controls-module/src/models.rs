@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+pub use qobuz_client::qobuz_models::discover::DiscoverSection;
 use qobuz_client::qobuz_models::playlist::Owner;
 
 pub mod mapper;
@@ -200,6 +201,13 @@ pub struct DiscoverPage {
     pub press_awards: Vec<AlbumSimple>,
     pub playlists: Vec<PlaylistSimple>,
     pub playlists_tags: Vec<PlaylistTag>,
+}
+
+/// A page of albums from a discover section and whether another follows.
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AlbumPage {
+    pub albums: Vec<AlbumSimple>,
+    pub has_more: bool,
 }
 
 #[derive(
