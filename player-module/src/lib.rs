@@ -3,6 +3,7 @@ use crate::error::PlayerError;
 pub use qobuz_client::client::AudioQuality;
 
 pub mod client;
+pub mod covers;
 pub mod database;
 mod downloader;
 pub mod error;

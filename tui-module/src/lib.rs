@@ -9,7 +9,7 @@ use controls_module::{
 use disconnect_module::DisconnectClientConfig;
 use favorites::FavoritesState;
 use player_module::{
-    AppResult, client::StreamClient, database::Database, error::PlayerError,
+    AppResult, client::StreamClient, covers::Covers, database::Database, error::PlayerError,
     notification::NotificationBroadcast,
 };
 use queue::QueueState;
@@ -48,6 +48,7 @@ pub async fn init(
     exit_sender: ExitSender,
     audio_cache_ttl_sender: mpsc::UnboundedSender<u32>,
     database: Arc<Database>,
+    covers: Arc<Covers>,
     connect_available_devices: watch::Receiver<Vec<String>>,
     connect_active_device: watch::Receiver<String>,
     set_connect_active_device: mpsc::UnboundedSender<String>,
@@ -74,7 +75,7 @@ pub async fn init(
 
     let (image_tx, image_rx) = mpsc::unbounded_channel::<ImageLoaded>();
     let (loads_tx, loads_rx) = mpsc::unbounded_channel();
-    let image_cache = ImageManager::new(picker, image_tx);
+    let image_cache = ImageManager::new(picker, image_tx, covers);
 
     let mut app = App {
         broadcast,

@@ -20,7 +20,7 @@ pub struct Downloader {
     client: Arc<StreamClient>,
 }
 
-fn expand_tilde(path: &Path) -> PathBuf {
+pub(crate) fn expand_tilde(path: &Path) -> PathBuf {
     let path_str = path.to_string_lossy();
 
     if (path_str == "~" || path_str.starts_with("~/"))

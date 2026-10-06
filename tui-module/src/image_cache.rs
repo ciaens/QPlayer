@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use image::load_from_memory;
 use num_traits::ToPrimitive;
+use player_module::covers::Covers;
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 use tokio::sync::mpsc;
 
@@ -27,17 +28,20 @@ pub struct AppImage {
 pub struct ImageManager {
     cache: ImageCacheMap,
     picker: Picker,
-    http_client: reqwest::Client,
+    covers: Arc<Covers>,
     tx: mpsc::UnboundedSender<ImageLoaded>,
 }
 
 impl ImageManager {
-    pub fn new(picker: Picker, sender: mpsc::UnboundedSender<ImageLoaded>) -> Self {
-        let http_client = reqwest::Client::new();
+    pub fn new(
+        picker: Picker,
+        sender: mpsc::UnboundedSender<ImageLoaded>,
+        covers: Arc<Covers>,
+    ) -> Self {
         Self {
             cache: HashMap::default(),
             picker,
-            http_client,
+            covers,
             tx: sender,
         }
     }
@@ -48,11 +52,11 @@ impl ImageManager {
 
             let url = url.to_owned();
             let picker = self.picker.clone();
-            let http_client = self.http_client.clone();
+            let covers = self.covers.clone();
             let tx = self.tx.clone();
 
             tokio::spawn(async move {
-                let image = fetch_image(&picker, &url, &http_client).await;
+                let image = fetch_image(&picker, &url, &covers).await;
                 let _ = tx.send(ImageLoaded { url, image });
             });
         }
@@ -73,13 +77,8 @@ impl ImageManager {
     }
 }
 
-async fn fetch_image(
-    picker: &Picker,
-    image_url: &str,
-    http_client: &reqwest::Client,
-) -> Option<AppImage> {
-    let response = http_client.get(image_url).send().await.ok()?;
-    let img_bytes = response.bytes().await.ok()?;
+async fn fetch_image(picker: &Picker, image_url: &str, covers: &Covers) -> Option<AppImage> {
+    let img_bytes = covers.get(image_url).await.ok()?;
     let picker = picker.clone();
 
     tokio::task::spawn_blocking(move || {
