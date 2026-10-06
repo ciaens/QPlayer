@@ -22,6 +22,7 @@ use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use crate::{
     AppResult,
     client::StreamClient,
+    covers::Covers,
     database::Database,
     downloader::{DownloadResult, Downloader},
     error::PlayerError,
@@ -49,6 +50,7 @@ pub struct Player {
     pending_seek: Option<(u32, Duration)>,
     next_track_in_sink_queue: bool,
     downloader: Downloader,
+    covers: Arc<Covers>,
     state_change_delay: Option<Duration>,
     sample_rate_change_delay: Option<Duration>,
     active: Sender<bool>,
@@ -77,6 +79,7 @@ impl Player {
         let sink = Sink::new(volume_receiver, preferred_device_id);
 
         let downloader = Downloader::new(audio_cache_directory, database.clone(), client.clone());
+        let covers = Arc::new(Covers::new(audio_cache_directory));
 
         let track_finished = sink.track_finished();
 
@@ -114,6 +117,7 @@ impl Player {
             next_track_is_queried: false,
             pending_seek: None,
             downloader,
+            covers,
             state_change_delay,
             sample_rate_change_delay,
             active,
@@ -122,6 +126,10 @@ impl Player {
             auto_play_rx,
             reports: Some(reports),
         })
+    }
+
+    pub fn covers(&self) -> Arc<Covers> {
+        self.covers.clone()
     }
 
     pub fn controls(&self) -> Controls {
@@ -885,6 +893,7 @@ impl Player {
                 }
                 StreamingConfiguration::SetAudioCacheDirectory { new_directory } => {
                     self.database.set_cache_directory(&new_directory).await?;
+                    self.covers.set_directory(&new_directory)?;
                     self.downloader.set_audio_cache_dir(new_directory);
                 }
                 StreamingConfiguration::UseFileBasedStreaming {
