@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "insert or replace into library (rowid, last_update, favorite_ids, favorites) values (1, ?1, ?2, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "7f3d4f0ebc2ec4c10477e6faa48b04bd0b2a297fc8e100cecfeed4e6126d30a1"
+}

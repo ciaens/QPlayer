@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "select last_update, favorite_ids, favorites from library",
+  "describe": {
+    "columns": [
+      {
+        "name": "last_update",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "favorite_ids",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "favorites",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "206c3b53bd1d18a015d6328b600b0d56555d03d05caa61c16d4f38a7e5831413"
+}

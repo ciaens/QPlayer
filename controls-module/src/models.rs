@@ -105,7 +105,7 @@ pub struct Favorites {
     pub tracks: Vec<Track>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FavoriteIds {
     pub albums: HashSet<String>,
     pub artists: HashSet<u32>,

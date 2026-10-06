@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use crate::database::{Credentials, Database};
+use crate::database::{Credentials, Database, LibrarySnapshot};
 use controls_module::models::{
     Album, AlbumPage, AlbumSimple, Artist, ArtistPage, DiscoverPage, DiscoverSection, FavoriteIds,
     Favorites, Genre, Playlist, PlaylistSimple, SearchResults, Track,
@@ -557,43 +557,43 @@ impl StreamClient {
 
     pub async fn add_favorite_track(&self, id: u32) -> AppResult<()> {
         self.get_client().await?.add_favorite_track(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     pub async fn remove_favorite_track(&self, id: u32) -> AppResult<()> {
         self.get_client().await?.remove_favorite_track(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     pub async fn add_favorite_album(&self, id: &str) -> AppResult<()> {
         self.get_client().await?.add_favorite_album(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     pub async fn remove_favorite_album(&self, id: &str) -> AppResult<()> {
         self.get_client().await?.remove_favorite_album(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     pub async fn add_favorite_artist(&self, id: u32) -> AppResult<()> {
         self.get_client().await?.add_favorite_artist(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     pub async fn remove_favorite_artist(&self, id: u32) -> AppResult<()> {
         self.get_client().await?.remove_favorite_artist(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     pub async fn add_favorite_playlist(&self, id: u32) -> AppResult<()> {
         self.get_client().await?.add_favorite_playlist(id).await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
@@ -602,17 +602,65 @@ impl StreamClient {
             .await?
             .remove_favorite_playlist(id)
             .await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
     /// After a change made here: the lists are stale and the stamp has moved, so the next read takes a fresh one.
-    fn library_changed(&self) -> AppResult<()> {
-        let mut library = self.library.lock()?;
-        library.forget();
-        library.stamp = None;
-        library.checked = None;
+    async fn library_changed(&self) -> AppResult<()> {
+        {
+            let mut library = self.library.lock()?;
+            library.forget();
+            library.stamp = None;
+            library.checked = None;
+        }
+        if let Err(err) = self.database.clear_library().await {
+            tracing::warn!("Keeping the library snapshot: {err}");
+        }
         Ok(())
+    }
+
+    /// What memory holds, else what the snapshot on disk holds when it was taken under the current stamp.
+    async fn cached_library<T>(
+        &self,
+        pick: impl Fn(&Library) -> Option<T>,
+    ) -> AppResult<(Option<T>, u64)> {
+        let (cached, generation) = {
+            let library = self.library.lock()?;
+            (pick(&library), library.generation)
+        };
+        if cached.is_some() {
+            return Ok((cached, generation));
+        }
+        let snapshot = self.database.get_library().await?;
+        let mut library = self.library.lock()?;
+        if let Some(snapshot) = snapshot
+            && library.generation == generation
+            && library
+                .stamp
+                .as_ref()
+                .is_some_and(|stamp| *stamp == snapshot.last_update)
+        {
+            library.ids = library.ids.take().or(snapshot.favorite_ids);
+            library.favorites = library.favorites.take().or(snapshot.favorites);
+        }
+        Ok((pick(&library), library.generation))
+    }
+
+    /// Writes the library to disk under the stamp it was fetched with.
+    async fn save_library(&self) -> AppResult<()> {
+        let snapshot = {
+            let library = self.library.lock()?;
+            let Some(last_update) = library.stamp.clone() else {
+                return Ok(());
+            };
+            LibrarySnapshot {
+                last_update,
+                favorite_ids: library.ids.clone(),
+                favorites: library.favorites.clone(),
+            }
+        };
+        self.database.set_library(&snapshot).await
     }
 
     /// Asks `user/lastUpdate` at most once a minute and forgets the library when the stamp moved.
@@ -626,7 +674,7 @@ impl StreamClient {
         let mut library = self.library.lock()?;
         match latest {
             Ok(latest) => {
-                if library.stamp.as_ref().is_some_and(|known| *known != latest) {
+                if library.stamp.as_ref() != Some(&latest) {
                     library.forget();
                 }
                 library.stamp = Some(latest);
@@ -640,10 +688,7 @@ impl StreamClient {
     /// The ids of every favorite and user playlist, the few kilobytes the flags need.
     pub async fn favorite_ids(&self) -> AppResult<FavoriteIds> {
         self.check_library().await?;
-        let (cached, generation) = {
-            let library = self.library.lock()?;
-            (library.ids.clone(), library.generation)
-        };
+        let (cached, generation) = self.cached_library(|library| library.ids.clone()).await?;
         if let Some(ids) = cached {
             return Ok(ids);
         }
@@ -660,19 +705,21 @@ impl StreamClient {
                 .collect(),
             tracks: ids.tracks.into_iter().collect(),
         };
-        let mut library = self.library.lock()?;
-        if library.generation == generation {
-            library.ids = Some(ids.clone());
+        {
+            let mut library = self.library.lock()?;
+            if library.generation == generation {
+                library.ids = Some(ids.clone());
+            }
         }
+        self.save_library().await?;
         Ok(ids)
     }
 
     pub async fn favorites(&self) -> AppResult<Favorites> {
         self.check_library().await?;
-        let (cached, generation) = {
-            let library = self.library.lock()?;
-            (library.favorites.clone(), library.generation)
-        };
+        let (cached, generation) = self
+            .cached_library(|library| library.favorites.clone())
+            .await?;
         if let Some(favorites) = cached {
             return Ok(favorites);
         }
@@ -718,10 +765,13 @@ impl StreamClient {
             tracks,
         };
 
-        let mut library = self.library.lock()?;
-        if library.generation == generation {
-            library.favorites = Some(favorites.clone());
+        {
+            let mut library = self.library.lock()?;
+            if library.generation == generation {
+                library.favorites = Some(favorites.clone());
+            }
         }
+        self.save_library().await?;
         Ok(favorites)
     }
 
@@ -741,14 +791,17 @@ impl StreamClient {
             client.user_id(),
             &*self.max_audio_quality.read().await,
         );
-        let mut library = self.library.lock()?;
-        if let Some(ids) = &mut library.ids {
-            ids.playlists.insert(playlist.id);
+        {
+            let mut library = self.library.lock()?;
+            if let Some(ids) = &mut library.ids {
+                ids.playlists.insert(playlist.id);
+            }
+            if let Some(favorites) = &mut library.favorites {
+                favorites.playlists.push(playlist.clone());
+                favorites.playlists.sort_by(|a, b| a.title.cmp(&b.title));
+            }
         }
-        if let Some(favorites) = &mut library.favorites {
-            favorites.playlists.push(playlist.clone());
-            favorites.playlists.sort_by(|a, b| a.title.cmp(&b.title));
-        }
+        self.save_library().await?;
 
         Ok(playlist)
     }
@@ -758,7 +811,7 @@ impl StreamClient {
             .await?
             .delete_playlist(playlist_id)
             .await?;
-        self.library_changed()?;
+        self.library_changed().await?;
         Ok(())
     }
 
